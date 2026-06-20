@@ -46,3 +46,13 @@ PALETTES = {
     "BrBG":     ["#a6611a","#dfc27d","#f5f5f5","#80cdc1","#018571"],
     "PiYG":     ["#c51b7d","#e9a3c9","#f7f7f7","#a1d76a","#4d9221"],
 }
+
+TABLE_DIR = "."        # dossier temporaire pour pysheds
+_DEM_PATH  = None            # chemin vers le GeoTIFF DEM
+_DEM_ARRAY = None            # tableau numpy (float32)
+_DEM_EXT   = None            # [left, right, bottom, top]
+_DEM_TRANSFORM = None
+EXPORT_RASTERS    = False
+# Cache des couches traitées
+LAYERS = {}
+_PYSHEDS = {}
