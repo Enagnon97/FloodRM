@@ -206,3 +206,119 @@ def derive_flow_accumulation(dem_arr=None, ext=None, save=True):
     if save and _vars.EXPORT_RASTERS:
         save_raster(acc_km2, ext, os.path.join("rasters", "flow_accumulation.tif"))
     return acc_km2, ext
+
+def derive_drainage_density(dem_arr=None, ext=None, save=True,
+                            threshold_km2=5.0, method="km/km2", window_km=2.0):
+    """
+    Densité de drainage depuis l'accumulation de flux locale.
+    method : "km/km2"      → longueur cours d'eau / aire fenêtre circulaire
+             "fraction_5km" → fraction de pixels-cours-d'eau dans fenêtre 5 km
+    """
+    from scipy.ndimage import convolve
+
+    if dem_arr is None:
+        dem_arr, ext = fetch_array_local("elevation")
+    if ext is None:
+        ext = _vars._DEM_EXT
+
+    # Récupère ou calcule l'accumulation
+    if "flow_accumulation" in LAYERS:
+        facc = LAYERS["flow_accumulation"]
+    else:
+        facc, ext = derive_flow_accumulation(dem_arr, ext, save=False)
+
+    h, w    = facc.shape
+    dx_deg  = (ext[1] - ext[0]) / w
+    dy_deg  = (ext[3] - ext[2]) / h
+    lat_c   = (ext[2] + ext[3]) / 2.0
+    cell_x_m = dx_deg * 111320.0 * math.cos(math.radians(lat_c))
+    cell_y_m = dy_deg * 111320.0
+    cell_m   = (cell_x_m + cell_y_m) / 2.0
+    cell_km  = cell_m / 1000.0
+
+    # Réseau de cours d'eau
+    streams = np.where(np.isnan(facc), 0.0, (facc >= threshold_km2).astype("float64"))
+
+    if method == "fraction_5km":
+        r_pix = max(1, int(5000.0 / cell_m))
+        yi, xi = np.ogrid[-r_pix:r_pix+1, -r_pix:r_pix+1]
+        kernel = (xi**2 + yi**2 <= r_pix**2).astype("float64")
+        kernel /= kernel.sum()                      # noyau moyenneur
+        dd = convolve(streams, kernel, mode="constant", cval=0.0).astype("float32")
+    else:  # km/km2
+        r_pix = max(1, int(window_km * 1000.0 / cell_m))
+        yi, xi = np.ogrid[-r_pix:r_pix+1, -r_pix:r_pix+1]
+        kernel = (xi**2 + yi**2 <= r_pix**2).astype("float64")   # noyau circulaire
+        win_area_km2 = math.pi * (window_km ** 2)
+        # somme de (1 pixel × cell_km) dans la fenêtre / aire fenêtre
+        dd = (convolve(streams * cell_km, kernel, mode="constant", cval=0.0)
+              / win_area_km2).astype("float32")
+
+    dd[np.isnan(dem_arr)] = np.nan
+    LAYERS["drainage_density"] = dd
+    if save and _vars.EXPORT_RASTERS:
+        save_raster(dd, ext, os.path.join("rasters", "drainage_density.tif"))
+    return dd, ext
+
+
+def derive_dist_to_river(dem_arr=None, ext=None, save=True,
+                         threshold_km2=5.0, max_dist_km=30.0):
+    """
+    Distance euclidienne aux cours d'eau (mètres), capée à max_dist_km.
+    Équivalent local du fastDistanceTransform GEE.
+    """
+    from scipy.ndimage import distance_transform_edt
+
+    if dem_arr is None:
+        dem_arr, ext = fetch_array_local("elevation")
+    if ext is None:
+        ext = _vars._DEM_EXT
+
+    if "flow_accumulation" in LAYERS:
+        facc = LAYERS["flow_accumulation"]
+    else:
+        facc, ext = derive_flow_accumulation(dem_arr, ext, save=False)
+
+    h, w     = facc.shape
+    dx_deg   = (ext[1] - ext[0]) / w
+    dy_deg   = (ext[3] - ext[2]) / h
+    lat_c    = (ext[2] + ext[3]) / 2.0
+    cell_x_m = dx_deg * 111320.0 * math.cos(math.radians(lat_c))
+    cell_y_m = dy_deg * 111320.0
+
+    # Pixels non-cours-d'eau = là où la distance est calculée
+    streams    = (~np.isnan(facc)) & (facc >= threshold_km2)
+    not_stream = ~streams
+
+    # sampling=[dy, dx] → distance en mètres réels (pixels non carrés pris en compte)
+    dist_m = distance_transform_edt(not_stream, sampling=[cell_y_m, cell_x_m])
+    dist_m = np.minimum(dist_m, max_dist_km * 1000.0).astype("float32")
+    dist_m[np.isnan(dem_arr)] = np.nan
+
+    LAYERS["dist_to_river"] = dist_m
+    if save and _vars.EXPORT_RASTERS:
+        save_raster(dist_m, ext, os.path.join("rasters", "dist_to_river.tif"))
+    return dist_m, ext
+
+def load_lulc(path, save=False):
+    """
+    Charge une couche LULC locale (GeoTIFF) et la stocke dans LAYERS["worldcover"].
+    Les codes de classe sont définis dans durpy.variables.WC_LEGEND.
+    Retourne (array int16, ext).
+    """
+    with rasterio.open(path) as src:
+        a  = src.read(1)
+        nd = src.nodata
+        b  = src.bounds
+        ext = [b.left, b.right, b.bottom, b.top]
+
+    # Garde les codes entiers, marque le nodata comme -1
+    a = a.astype("int16")
+    if nd is not None:
+        a[a == int(nd)] = -1
+
+    LAYERS["worldcover"] = a
+    if save and _vars.EXPORT_RASTERS:
+        save_raster(a.astype("float32"), ext, os.path.join("rasters", "worldcover.tif"))
+    print(f"LULC chargé : {a.shape} | classes présentes : {sorted(set(a.flat)) }")
+    return a, ext

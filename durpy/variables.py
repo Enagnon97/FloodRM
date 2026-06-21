@@ -47,6 +47,19 @@ PALETTES = {
     "PiYG":     ["#c51b7d","#e9a3c9","#f7f7f7","#a1d76a","#4d9221"],
 }
 
+WC_LEGEND = {
+    10:("Trees","#006400"),
+    20:("Shrubland","#ffbb22"),
+    30:("Grassland","#ffff4c"),
+    40:("Cropland","#f096ff"),
+    50:("Built-up","#fa0000"),
+    60:("Bare / sparse","#b4b4b4"),
+    70:("Snow / ice","#f0f0f0"),
+    80:("Water","#0064c8"),
+    90:("Wetland","#0096a0"),
+    95:("Mangrove","#00cf75"),
+    100:("Moss / lichen","#fae6a0")}
+
 TABLE_DIR = "."        # dossier temporaire pour pysheds
 _DEM_PATH  = None            # chemin vers le GeoTIFF DEM
 _DEM_ARRAY = None            # tableau numpy (float32)
