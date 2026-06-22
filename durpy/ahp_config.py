@@ -35,25 +35,27 @@ RECLASS = {
     "twi":               dict(kind="continuous",  breaks=[6, 9, 12, 16],         scores=[1, 2, 3, 4, 5]),
     "flow_accumulation": dict(kind="quantile",    scores=[1, 2, 3, 4, 5]),
     "worldcover":        dict(kind="categorical", mapping=WORLDCOVER_SCORE_MAP),
+    "rain_mm_yr":        dict(kind="quantile",    scores=[1, 2, 3, 4, 5]),
 }
 
 # --- Ordre des critères (indices de la matrice AHP) ---
 AHP_CRITERIA = [
-    "elevation",        # 0
-    "slope",            # 1
-    "aspect",           # 2
-    "curvature",        # 3
-    "dist_to_river",    # 4
-    "drainage_density", # 5
-    "twi",              # 6
-    "flow_accumulation",# 7
-    "worldcover",       # 8
+    "elevation",         # 0
+    "slope",             # 1
+    "aspect",            # 2
+    "curvature",         # 3
+    "dist_to_river",     # 4
+    "drainage_density",  # 5
+    "twi",               # 6
+    "flow_accumulation", # 7
+    "worldcover",        # 8
+    "rain_mm_yr",        # 9
 ]
 
 # --- Activation des facteurs (mettre False pour exclure) ---
 AHP_INCLUDE = {k: True for k in AHP_CRITERIA}
 
-# --- Matrice de Saaty (flood risk) ---
+# --- Matrice de Saaty (flood risk, 10 critères) ---
 # AHP_PAIRS[(i,j)] avec i>j : "le critère i est x fois plus important que j"
 # Indices selon AHP_CRITERIA ci-dessus.
 AHP_PAIRS = {
@@ -93,10 +95,19 @@ AHP_PAIRS = {
     (8, 5): 1/2,        # worldcover < drainage_density
     (8, 6): 1/5,        # worldcover < twi
     (8, 7): 1/5,        # worldcover < flow_accumulation
+    (9, 0): 2,          # rain > elevation
+    (9, 1): 2,          # rain > slope
+    (9, 2): 7,          # rain >> aspect
+    (9, 3): 5,          # rain >> curvature
+    (9, 4): 1/2,        # rain < dist_to_river
+    (9, 5): 2,          # rain > drainage_density
+    (9, 6): 1/2,        # rain < twi
+    (9, 7): 1/2,        # rain < flow_accumulation
+    (9, 8): 3,          # rain > worldcover
 }
 
 # --- Couches à normaliser (aspect et worldcover exclus) ---
 NORM_KEYS = [
     "elevation", "slope", "curvature", "dist_to_river",
-    "drainage_density", "twi", "flow_accumulation",
+    "drainage_density", "twi", "flow_accumulation", "rain_mm_yr",
 ]

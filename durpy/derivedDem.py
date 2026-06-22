@@ -326,3 +326,65 @@ def load_lulc(path, save=False):
 
     LAYERS["worldcover"] = a
     return a, ext
+
+
+def load_rain(path, save=False):
+    """
+    Charge un fichier NetCDF de pluies quotidiennes (CHIRPS ou similaire)
+    et calcule la pluie annuelle moyenne (mm/an).
+    Rééchantillonne à la résolution du DEM par interpolation bilinéaire.
+    Stocke dans LAYERS["rain_mm_yr"]. Retourne (array float32, ext).
+    """
+    import netCDF4 as nc
+    from scipy.ndimage import zoom as nd_zoom
+
+    with nc.Dataset(path) as ds:
+        # Détecte la variable de précipitation (premier champ 3D)
+        precip_var = None
+        for v in ds.variables:
+            if ds.variables[v].ndim == 3:
+                precip_var = v
+                break
+        if precip_var is None:
+            raise RuntimeError("Aucune variable 3D (time, lat, lon) trouvée dans le fichier NetCDF.")
+
+        data  = ds.variables[precip_var][:]          # (time, lat, lon)
+        lats  = ds.variables['lat'][:]
+        lons  = ds.variables['lon'][:]
+        ndays = data.shape[0]
+
+    # Pluie annuelle moyenne : somme totale / nombre d'années
+    n_years  = ndays / 365
+    rain_sum = np.nansum(data, axis=0)               # (lat, lon)
+    rain_yr  = (rain_sum / n_years).astype("float32")
+
+    # Lat CHIRPS est souvent du nord au sud → vérifier et réordonner si besoin
+    if lats[0] > lats[-1]:
+        rain_yr = rain_yr[::-1, :]
+        lats    = lats[::-1]
+
+    ext_rain = [float(lons.min()), float(lons.max()),
+                float(lats.min()), float(lats.max())]
+
+    # Rééchantillonne à la résolution du DEM si nécessaire
+    if _vars._DEM_ARRAY is not None:
+        dem_h, dem_w = _vars._DEM_ARRAY.shape
+        zoom_y = dem_h / rain_yr.shape[0]
+        zoom_x = dem_w / rain_yr.shape[1]
+        rain_yr = nd_zoom(rain_yr, (zoom_y, zoom_x), order=1)  # bilinéaire
+        ext = _vars._DEM_EXT
+        # Applique le masque DEM
+        rain_yr[np.isnan(_vars._DEM_ARRAY)] = np.nan
+    else:
+        ext = ext_rain
+
+    rain_yr = rain_yr.astype("float32")
+    LAYERS["rain_mm_yr"] = rain_yr
+
+    mn = float(np.nanmin(rain_yr))
+    mx = float(np.nanmax(rain_yr))
+    print(f"Pluie annuelle moyenne chargee : min={mn:.1f} mm/an | max={mx:.1f} mm/an")
+
+    if save and _vars.EXPORT_RASTERS:
+        save_raster(rain_yr, ext, os.path.join("rasters", "rain_mm_yr.tif"))
+    return rain_yr, ext
