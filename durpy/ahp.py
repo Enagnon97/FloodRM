@@ -266,6 +266,13 @@ def compute_flood_index(SCORES, weights):
         raise RuntimeError("Aucun facteur actif dans SCORES.")
     wsum = sum(weights[k] for k in active) or 1.0
     shape = next(SCORES[k] for k in active).shape
+    bad = {k: SCORES[k].shape for k in active if SCORES[k].shape != shape}
+    if bad:
+        raise ValueError(
+            f"Formes incompatibles dans SCORES (référence {shape}) : {bad}.\n"
+            "Assurez-vous d'appeler init_local_engine() avant load_rain()/load_lulc(), "
+            "puis relancez toutes les cellules dans l'ordre."
+        )
     fips = np.zeros(shape, dtype="float64")
     for k in active:
         s = np.where(np.isnan(SCORES[k]), 0.0, SCORES[k])
