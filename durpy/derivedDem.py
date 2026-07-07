@@ -632,7 +632,7 @@ def derive_runoff(cn_by_lulc=None, dem_arr=None, save=True):
 # =============================================================================
 # DISTANCE AUX ROUTES — OpenStreetMap
 # =============================================================================
-
+"""
 def derive_dist_to_road(save=True):
     """
     Distance euclidienne (m) à la route OSM la plus proche.
@@ -674,3 +674,4 @@ def derive_dist_to_road(save=True):
     print(f"Distance route : min={float(np.nanmin(dist_m)):.0f} m | max={float(np.nanmax(dist_m)):.0f} m")
     return dist_m, ext
 
+"""
