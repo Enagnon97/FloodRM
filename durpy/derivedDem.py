@@ -6,12 +6,49 @@ import matplotlib.image as mpimg
 import geopandas as gpd
 import rasterio
 from rasterio.transform import from_bounds
+from rasterio.warp import reproject, Resampling
 from matplotlib.colors import ListedColormap, LinearSegmentedColormap, to_hex
 from matplotlib.patches import Patch
 #from pysheds.grid import Grid
 
 import durpy.variables as _vars
 from durpy.variables import LAYERS, _PYSHEDS
+
+
+# =============================================================================
+# HELPER — alignement sur le DEM (reprojection + rééchantillonnage)
+# =============================================================================
+
+def _align_to_dem(src_dataset, resampling=Resampling.bilinear):
+    """
+    Reprojette et rééchantillonne un raster ouvert vers l'emprise,
+    la résolution et le CRS du DEM (EPSG:4326).
+    Gère les CRS projetés (mètres) comme les CRS géographiques.
+    Retourne un array float32 de même forme que _DEM_ARRAY.
+    """
+    if _vars._DEM_ARRAY is None:
+        raise RuntimeError("Appelez init_local_engine() avant de charger des couches.")
+
+    dem_h, dem_w = _vars._DEM_ARRAY.shape
+    ext          = _vars._DEM_EXT            # [lon_min, lon_max, lat_min, lat_max]
+    dst_transform = from_bounds(ext[0], ext[2], ext[1], ext[3], dem_w, dem_h)
+    dst_crs       = rasterio.crs.CRS.from_epsg(4326)
+
+    dst = np.full((dem_h, dem_w), np.nan, dtype="float32")
+    reproject(
+        source        = rasterio.band(src_dataset, 1),
+        destination   = dst,
+        src_transform = src_dataset.transform,
+        src_crs       = src_dataset.crs,
+        dst_transform = dst_transform,
+        dst_crs       = dst_crs,
+        resampling    = resampling,
+        src_nodata    = src_dataset.nodata,
+        dst_nodata    = np.nan,
+    )
+    # Applique le masque DEM
+    dst[np.isnan(_vars._DEM_ARRAY)] = np.nan
+    return dst
 
 def init_local_engine(dem_path):
     """
@@ -452,4 +489,188 @@ def load_rain_v2(path, save=False):
     mx = float(np.nanmax(rain_yr))
     print(f"Pluie annuelle cumul moyen : min={mn:.1f} mm/an | max={mx:.1f} mm/an")
     return rain_yr, _vars._DEM_EXT
+
+
+# =============================================================================
+# CHARGEMENT DEPUIS FICHIER (avec alignement automatique sur le DEM)
+# =============================================================================
+
+def load_hand(path, save=False):
+    """
+    Charge HAND depuis un GeoTIFF existant et l'aligne sur le DEM.
+    Gère toute résolution et tout CRS source (bilinéaire).
+    """
+    with rasterio.open(path) as src:
+        arr = _align_to_dem(src, Resampling.bilinear)
+    arr = np.maximum(arr, 0.0)             # HAND est toujours >= 0
+    arr[np.isnan(_vars._DEM_ARRAY)] = np.nan
+    LAYERS["hand"] = arr
+    if save and _vars.EXPORT_RASTERS:
+        save_raster(arr, _vars._DEM_EXT, os.path.join("rasters", "hand.tif"))
+    print(f"HAND chargé       : min={np.nanmin(arr):.1f} m  | max={np.nanmax(arr):.1f} m")
+    return arr, _vars._DEM_EXT
+
+
+def load_runoff(path, save=False):
+    """
+    Charge le ruissellement (mm/an) depuis un GeoTIFF existant et l'aligne sur le DEM.
+    Supporte les rasters grossiers (ex. 0.05°) — interpolation bilinéaire.
+    """
+    with rasterio.open(path) as src:
+        arr = _align_to_dem(src, Resampling.bilinear)
+    arr = np.maximum(arr, 0.0)
+    arr[np.isnan(_vars._DEM_ARRAY)] = np.nan
+    LAYERS["runoff"] = arr
+    if save and _vars.EXPORT_RASTERS:
+        save_raster(arr, _vars._DEM_EXT, os.path.join("rasters", "runoff.tif"))
+    print(f"Runoff chargé     : min={np.nanmin(arr):.1f}    | max={np.nanmax(arr):.1f} mm/an")
+    return arr, _vars._DEM_EXT
+
+
+def load_dist_to_road(path, save=False):
+    """
+    Charge la distance aux routes (m) depuis un GeoTIFF existant et l'aligne sur le DEM.
+    Gère les CRS projetés (mètres) — reprojection automatique vers EPSG:4326.
+    """
+    with rasterio.open(path) as src:
+        arr = _align_to_dem(src, Resampling.bilinear)
+    arr = np.maximum(arr, 0.0)
+    arr[np.isnan(_vars._DEM_ARRAY)] = np.nan
+    LAYERS["dist_to_road"] = arr
+    if save and _vars.EXPORT_RASTERS:
+        save_raster(arr, _vars._DEM_EXT, os.path.join("rasters", "dist_to_road.tif"))
+    print(f"Dist. routes chargée : min={np.nanmin(arr):.0f} m | max={np.nanmax(arr):.0f} m")
+    return arr, _vars._DEM_EXT
+
+
+# =============================================================================
+# HAND — Height Above Nearest Drainage
+# =============================================================================
+
+def derive_hand(threshold_km2=1.0, dem_arr=None, ext=None, save=True):
+    """
+    Calcule le HAND (Height Above Nearest Drainage) en mètres.
+    Pour chaque pixel : altitude - altitude du pixel de drainage euclidien le plus proche.
+    Le réseau de drainage est défini par flow_accumulation >= threshold_km2.
+    """
+    from scipy.ndimage import distance_transform_edt
+
+    if dem_arr is None:
+        dem_arr, ext = fetch_array_local("elevation")
+    if ext is None:
+        ext = _vars._DEM_EXT
+
+    if "flow_accumulation" not in LAYERS:
+        derive_flow_accumulation(dem_arr, ext, save=False)
+    facc = LAYERS["flow_accumulation"]
+
+    river_mask = (~np.isnan(facc)) & (facc >= threshold_km2)
+
+    _, indices = distance_transform_edt(~river_mask, return_distances=True, return_indices=True)
+
+    hand = dem_arr - dem_arr[indices[0], indices[1]]
+    hand = np.maximum(hand, 0.0).astype("float32")
+    hand[np.isnan(dem_arr)] = np.nan
+
+    LAYERS["hand"] = hand
+    if save and _vars.EXPORT_RASTERS:
+        save_raster(hand, ext, os.path.join("rasters", "hand.tif"))
+    print(f"HAND : min={float(np.nanmin(hand)):.1f} m | max={float(np.nanmax(hand)):.1f} m")
+    return hand, ext
+
+
+# =============================================================================
+# RUISSELLEMENT SCS-CN
+# =============================================================================
+
+# Curve Number par classe ESA WorldCover (groupe hydrologique B/C — tropical)
+CN_BY_LULC = {
+    10:  55,   # Forêt/Arbres        → infiltration élevée
+    20:  65,   # Arbustes
+    30:  68,   # Prairies
+    40:  75,   # Cultures
+    50:  90,   # Zones bâties        → imperméable
+    60:  77,   # Sol nu / éparse
+    70:  98,   # Neige / glace       (hors contexte tropical)
+    80:  98,   # Eau permanente
+    90:  78,   # Zones humides
+    95:  75,   # Mangroves
+    100: 65,   # Mousses / lichens
+}
+
+
+def derive_runoff(cn_by_lulc=None, dem_arr=None, save=True):
+    """
+    Ruissellement annuel (mm/an) via méthode SCS-CN.
+    Q = (P - 0.2·S)² / (P + 0.8·S)  avec  S = 25400/CN - 254
+    Nécessite que LAYERS["rain_mm_yr"] et LAYERS["worldcover"] soient chargés.
+    """
+    for key in ("rain_mm_yr", "worldcover"):
+        if key not in LAYERS:
+            raise RuntimeError(f"LAYERS['{key}'] absent — chargez rain et lulc avant derive_runoff().")
+
+    rain = LAYERS["rain_mm_yr"]
+    lulc = LAYERS["worldcover"]
+    cn_map = cn_by_lulc or CN_BY_LULC
+
+    cn = np.full(lulc.shape, np.nan, dtype="float32")
+    for code, cn_val in cn_map.items():
+        cn[lulc == code] = cn_val
+
+    S  = 25400.0 / cn - 254.0          # rétention potentielle (mm)
+    Ia = 0.2 * S                        # abstraction initiale
+    Q  = np.where(rain > Ia, (rain - Ia) ** 2 / (rain + 0.8 * S), 0.0)
+    Q  = np.where(np.isnan(cn), np.nan, Q).astype("float32")
+
+    LAYERS["runoff"] = Q
+    if save and _vars.EXPORT_RASTERS:
+        save_raster(Q, _vars._DEM_EXT, os.path.join("rasters", "runoff.tif"))
+    print(f"Ruissellement SCS-CN : min={float(np.nanmin(Q)):.1f} | max={float(np.nanmax(Q)):.1f} mm/an")
+    return Q, _vars._DEM_EXT
+
+
+# =============================================================================
+# DISTANCE AUX ROUTES — OpenStreetMap
+# =============================================================================
+
+def derive_dist_to_road(save=True):
+    """
+    Distance euclidienne (m) à la route OSM la plus proche.
+    Télécharge le réseau routier sur l'emprise du DEM via osmnx,
+    rasterise les arêtes, puis applique une transformée de distance.
+    """
+    import osmnx as ox
+    from rasterio.features import rasterize
+    from scipy.ndimage import distance_transform_edt
+
+    if _vars._DEM_ARRAY is None:
+        raise RuntimeError("Appelez init_local_engine() avant derive_dist_to_road().")
+
+    ext = _vars._DEM_EXT               # [lon_min, lon_max, lat_min, lat_max]
+    h, w = _vars._DEM_ARRAY.shape
+
+    print("Téléchargement réseau routier OSM (peut prendre ~1 min)…")
+    G = ox.graph_from_bbox(
+        north=ext[3], south=ext[2], east=ext[1], west=ext[0],
+        network_type="all", retain_all=False,
+    )
+    edges = ox.graph_to_gdfs(G, nodes=False)[["geometry"]]
+
+    transform = from_bounds(ext[0], ext[2], ext[1], ext[3], w, h)
+    shapes = [(geom.__geo_interface__, 1) for geom in edges.geometry if geom is not None]
+    road_raster = rasterize(shapes, out_shape=(h, w), transform=transform,
+                            fill=0, dtype="uint8").astype(bool)
+
+    lat_c    = (ext[2] + ext[3]) / 2.0
+    cell_x_m = (ext[1] - ext[0]) / w * 111320.0 * math.cos(math.radians(lat_c))
+    cell_y_m = (ext[3] - ext[2]) / h * 111320.0
+
+    dist_m = distance_transform_edt(~road_raster, sampling=[cell_y_m, cell_x_m]).astype("float32")
+    dist_m[np.isnan(_vars._DEM_ARRAY)] = np.nan
+
+    LAYERS["dist_to_road"] = dist_m
+    if save and _vars.EXPORT_RASTERS:
+        save_raster(dist_m, ext, os.path.join("rasters", "dist_to_road.tif"))
+    print(f"Distance route : min={float(np.nanmin(dist_m)):.0f} m | max={float(np.nanmax(dist_m)):.0f} m")
+    return dist_m, ext
 
